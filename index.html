@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Road Trip Explorer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <style>
+        body { margin: 0; background: #e0e0e0; }
+        #map-container { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+        }
+        #van-container { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="map-container"></div>
+    <div id="van-container"></div>
+    <div id="instructions">
+        Use Arrow Keys to drive the van
+    </div>
+    <script>
+        // Initialize Three.js
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('van-container').appendChild(renderer.domElement);
+
+        // Add sky background
+        const skyGeometry = new THREE.SphereGeometry(100, 32, 32);
+        const skyMaterial = new THREE.MeshBasicMaterial({
+            color: 0x87CEEB,  // Sky blue color
+            side: THREE.BackSide
+        });
+        const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+        scene.add(sky);
+
+        // Create US map background
+        const mapWidth = 100;
+        const mapHeight = 60;
+        const mapGeometry = new THREE.PlaneGeometry(mapWidth, mapHeight);
+        const mapTexture = new THREE.TextureLoader().load('map.png');
+        const mapMaterial = new THREE.MeshBasicMaterial({ 
+            map: mapTexture,
+            side: THREE.DoubleSide,
+            transparent: true
+        });
+        const map = new THREE.Mesh(mapGeometry, mapMaterial);
+        scene.add(map);
+
+        // Add lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight.position.set(0, 1, 1);
+        scene.add(directionalLight);
+
+        // Create smoke particle system
+        const smokeGeometry = new THREE.BufferGeometry();
+        const smokeMaterial = new THREE.PointsMaterial({
+            color: 0x444444,  // Darker gray color
+            size: 0.15,       // Slightly larger particles
+            transparent: true,
+            opacity: 0.8,     // More visible
+            blending: THREE.AdditiveBlending
+        });
+
+        const maxParticles = 200;  // Increased max particles
+        const particles = new Float32Array(maxParticles * 3);
+        const particleVelocities = new Float32Array(maxParticles * 3);
+        const particleLifetimes = new Float32Array(maxParticles);
+        let particleCount = 0;
+
+        smokeGeometry.setAttribute('position', new THREE.BufferAttribute(particles, 3));
+        const smokeParticles = new THREE.Points(smokeGeometry, smokeMaterial);
+        scene.add(smokeParticles);
+
+        // Function to add a new smoke particle
+        function addSmokeParticle(x, y, z) {
+            if (particleCount < maxParticles) {
+                const i = particleCount * 3;
+                particles[i] = x;
+                particles[i + 1] = y;
+                particles[i + 2] = z;
+                
+                // Random initial velocity
+                particleVelocities[i] = (Math.random() - 0.5) * 0.02;
+                particleVelocities[i + 1] = Math.random() * 0.02 + 0.01;
+                particleVelocities[i + 2] = (Math.random() - 0.5) * 0.02;
+                
+                particleLifetimes[particleCount] = 1.0;
+                particleCount++;
+            }
+        }
+
+        // Initialize van
+        let van = null;
+        const loader = new THREE.GLTFLoader();
+
+        // Load van model directly
+        loader.load('Shaded/van.glb', (gltf) => {
+            van = gltf.scene;
+            // Adjust van scale and rotation
+            van.scale.set(0.5, 0.5, 0.5); // Made the van bigger
+            van.rotation.x = Math.PI / 2; // Rotate 90 degrees around X axis to put it on its wheels
+            scene.add(van);
+        }, undefined, (error) => {
+            console.error('Error loading van model:', error);
+            // Create a simple cube as fallback
+            const geometry = new THREE.BoxGeometry(1, 0.5, 0.5);
+            const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
+            van = new THREE.Mesh(geometry, material);
+            scene.add(van);
+        });
+
+        // Van position and movement
+        const vanState = {
+            x: 0,
+            y: 0,
+            speed: 0,
+            targetSpeed: 0,
+            maxSpeed: 0.2,
+            acceleration: 0.01
+        };
+
+        // Track pressed keys
+        const keys = {
+            ArrowUp: false,
+            ArrowDown: false,
+            ArrowLeft: false,
+            ArrowRight: false
+        };
+
+        // Key listeners
+        document.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                keys[e.key] = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                keys[e.key] = false;
+            }
+        });
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Calculate movement direction based on arrow keys
+            let moveX = 0;
+            let moveY = 0;
+
+            if (keys.ArrowUp) moveY -= 1;
+            if (keys.ArrowDown) moveY += 1;
+            if (keys.ArrowLeft) moveX -= 1;
+            if (keys.ArrowRight) moveX += 1;
+
+            // Normalize movement vector
+            const length = Math.sqrt(moveX * moveX + moveY * moveY);
+            if (length > 0) {
+                moveX /= length;
+                moveY /= length;
+            }
+
+            // Calculate target speed
+            if (length > 0) {
+                vanState.targetSpeed = vanState.maxSpeed;
+            } else {
+                vanState.targetSpeed = 0;
+            }
+
+            // Smoothly interpolate current speed to target speed
+            vanState.speed += (vanState.targetSpeed - vanState.speed) * 0.1;
+
+            // Update position
+            vanState.x += moveX * vanState.speed;
+            vanState.y += moveY * vanState.speed;
+
+            // Keep van within map bounds
+            vanState.x = Math.max(-mapWidth/2, Math.min(mapWidth/2, vanState.x));
+            vanState.y = Math.max(-mapHeight/2, Math.min(mapHeight/2, vanState.y));
+
+            // Update van position and rotation
+            if (van) {
+                van.position.set(vanState.x, vanState.y, 0.2);
+                // Only update rotation if we're moving
+                if (length > 0) {
+                    van.rotation.y = Math.atan2(moveX, -moveY);
+                    
+                    // Add smoke particles when moving - spawn more frequently
+                    const smokeOffset = 0.3; // Distance behind van
+                    const smokeX = vanState.x - Math.sin(van.rotation.y) * smokeOffset;
+                    const smokeY = vanState.y - Math.cos(van.rotation.y) * smokeOffset;
+                    
+                    // Spawn multiple particles per frame when moving
+                    for (let i = 0; i < 3; i++) {
+                        addSmokeParticle(smokeX, smokeY, 0.1);
+                    }
+                }
+            }
+
+            // Update smoke particles
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+                particles[i3] += particleVelocities[i3];
+                particles[i3 + 1] += particleVelocities[i3 + 1];
+                particles[i3 + 2] += particleVelocities[i3 + 2];
+                
+                particleLifetimes[i] -= 0.008;  // Slower fade out
+                
+                // Remove dead particles
+                if (particleLifetimes[i] <= 0) {
+                    particleCount--;
+                    if (i < particleCount) {
+                        // Move last particle to this position
+                        particles[i3] = particles[particleCount * 3];
+                        particles[i3 + 1] = particles[particleCount * 3 + 1];
+                        particles[i3 + 2] = particles[particleCount * 3 + 2];
+                        particleVelocities[i3] = particleVelocities[particleCount * 3];
+                        particleVelocities[i3 + 1] = particleVelocities[particleCount * 3 + 1];
+                        particleVelocities[i3 + 2] = particleVelocities[particleCount * 3 + 2];
+                        particleLifetimes[i] = particleLifetimes[particleCount];
+                        i--; // Recheck this position
+                    }
+                }
+            }
+            
+            // Update smoke geometry
+            smokeGeometry.attributes.position.needsUpdate = true;
+
+            // Update camera position
+            camera.position.set(vanState.x, vanState.y - 5, 5);
+            camera.lookAt(vanState.x, vanState.y, 0);
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start animation
+        animate();
+    </script>
+</body>
+</html> 
