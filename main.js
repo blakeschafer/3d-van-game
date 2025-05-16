@@ -29,7 +29,7 @@ let van = null;
 const loader = new THREE.GLTFLoader();
 
 // Load van model directly
-loader.load('http://localhost:8000/Shaded/van.glb', (gltf) => {
+loader.load('http://localhost:8000/shadedvan.glb', (gltf) => {
     van = gltf.scene;
     van.scale.set(0.1, 0.1, 0.1);
     scene.add(van);
