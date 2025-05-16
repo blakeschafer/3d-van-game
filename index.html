@@ -51,7 +51,7 @@
         // Add sky background
         const skyGeometry = new THREE.SphereGeometry(100, 32, 32);
         const skyMaterial = new THREE.MeshBasicMaterial({
-            color: 0x87CEEB,  // Sky blue color
+            color: 0x87CEEB,
             side: THREE.BackSide
         });
         const sky = new THREE.Mesh(skyGeometry, skyMaterial);
@@ -61,13 +61,14 @@
         const mapWidth = 100;
         const mapHeight = 60;
         const mapGeometry = new THREE.PlaneGeometry(mapWidth, mapHeight);
-        const mapTexture = new THREE.TextureLoader().load('map.png');
-        const mapMaterial = new THREE.MeshBasicMaterial({ 
+        const mapTexture = new THREE.TextureLoader().load('this.png');
+        const mapMaterial = new THREE.MeshPhongMaterial({ 
             map: mapTexture,
             side: THREE.DoubleSide,
             transparent: true
         });
         const map = new THREE.Mesh(mapGeometry, mapMaterial);
+        map.position.z = -0.1;
         scene.add(map);
 
         // Add lighting
@@ -80,14 +81,14 @@
         // Create smoke particle system
         const smokeGeometry = new THREE.BufferGeometry();
         const smokeMaterial = new THREE.PointsMaterial({
-            color: 0x444444,  // Darker gray color
-            size: 0.15,       // Slightly larger particles
+            color: 0x444444,
+            size: 0.15,
             transparent: true,
-            opacity: 0.8,     // More visible
+            opacity: 0.8,
             blending: THREE.AdditiveBlending
         });
 
-        const maxParticles = 200;  // Increased max particles
+        const maxParticles = 200;
         const particles = new Float32Array(maxParticles * 3);
         const particleVelocities = new Float32Array(maxParticles * 3);
         const particleLifetimes = new Float32Array(maxParticles);
@@ -119,16 +120,14 @@
         let van = null;
         const loader = new THREE.GLTFLoader();
 
-        // Load van model directly
-        loader.load('Shaded/van.glb', (gltf) => {
+        // Load van model
+        loader.load('Shaded/shadedvan.glb', (gltf) => {
             van = gltf.scene;
-            // Adjust van scale and rotation
-            van.scale.set(0.5, 0.5, 0.5); // Made the van bigger
-            van.rotation.x = Math.PI / 2; // Rotate 90 degrees around X axis to put it on its wheels
+            van.scale.set(0.5, 0.5, 0.5);
+            van.rotation.x = Math.PI / 2;
             scene.add(van);
         }, undefined, (error) => {
             console.error('Error loading van model:', error);
-            // Create a simple cube as fallback
             const geometry = new THREE.BoxGeometry(1, 0.5, 0.5);
             const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
             van = new THREE.Mesh(geometry, material);
@@ -141,8 +140,16 @@
             y: 0,
             speed: 0,
             targetSpeed: 0,
-            maxSpeed: 0.2,
-            acceleration: 0.01
+            maxSpeed: 0.08,
+            acceleration: 0.005,
+            deceleration: 0.01,
+            turnSpeed: 0.02,
+            direction: 0,
+            velocity: { x: 0, y: 0 },
+            friction: 0.99,
+            maxTurnSpeed: 0.05,
+            // Add boundary buffer to keep van from getting too close to edges
+            boundaryBuffer: 2.0
         };
 
         // Track pressed keys
@@ -166,6 +173,14 @@
             }
         });
 
+        // Camera settings
+        const cameraOffset = new THREE.Vector3(0, 2, 12); // Lowered height to 2, increased distance to 12 for side view
+        const cameraLookAt = new THREE.Vector3(0, 0, 0);
+        let cameraTarget = new THREE.Vector3();
+        let cameraSmoothness = 0.05;
+        let cameraDistance = 12;
+        let cameraHeight = 2;
+
         // Animation loop
         function animate() {
             requestAnimationFrame(animate);
@@ -174,8 +189,9 @@
             let moveX = 0;
             let moveY = 0;
 
-            if (keys.ArrowUp) moveY -= 1;
-            if (keys.ArrowDown) moveY += 1;
+            // Switched up and down controls
+            if (keys.ArrowDown) moveY -= 1; // Now moves forward
+            if (keys.ArrowUp) moveY += 1;   // Now moves backward
             if (keys.ArrowLeft) moveX -= 1;
             if (keys.ArrowRight) moveX += 1;
 
@@ -186,41 +202,107 @@
                 moveY /= length;
             }
 
-            // Calculate target speed
+            // Calculate target speed with more realistic acceleration
             if (length > 0) {
                 vanState.targetSpeed = vanState.maxSpeed;
             } else {
                 vanState.targetSpeed = 0;
             }
 
-            // Smoothly interpolate current speed to target speed
-            vanState.speed += (vanState.targetSpeed - vanState.speed) * 0.1;
+            // More realistic acceleration and deceleration
+            if (vanState.speed < vanState.targetSpeed) {
+                vanState.speed = Math.min(vanState.speed + vanState.acceleration, vanState.targetSpeed);
+            } else if (vanState.speed > vanState.targetSpeed) {
+                vanState.speed = Math.max(vanState.speed - vanState.deceleration, vanState.targetSpeed);
+            }
 
-            // Update position
-            vanState.x += moveX * vanState.speed;
-            vanState.y += moveY * vanState.speed;
+            // Apply friction for more realistic momentum
+            vanState.speed *= vanState.friction;
 
-            // Keep van within map bounds
-            vanState.x = Math.max(-mapWidth/2, Math.min(mapWidth/2, vanState.x));
-            vanState.y = Math.max(-mapHeight/2, Math.min(mapHeight/2, vanState.y));
+            // Update direction with more realistic turning
+            if (length > 0) {
+                const targetDirection = Math.atan2(moveX, -moveY);
+                const angleDiff = targetDirection - vanState.direction;
+                
+                // Normalize angle difference to [-PI, PI]
+                const normalizedAngleDiff = ((angleDiff + Math.PI) % (2 * Math.PI)) - Math.PI;
+                
+                // More realistic turning based on speed
+                const turnSpeed = Math.min(vanState.turnSpeed * (1 + vanState.speed), vanState.maxTurnSpeed);
+                vanState.direction += normalizedAngleDiff * turnSpeed;
+            }
+
+            // Calculate velocity based on direction and speed
+            vanState.velocity.x = Math.sin(vanState.direction) * vanState.speed;
+            vanState.velocity.y = -Math.cos(vanState.direction) * vanState.speed;
+
+            // Calculate new position
+            const newX = vanState.x + vanState.velocity.x;
+            const newY = vanState.y + vanState.velocity.y;
+
+            // Check boundaries with buffer
+            const halfWidth = mapWidth / 2 - vanState.boundaryBuffer;
+            const halfHeight = mapHeight / 2 - vanState.boundaryBuffer;
+
+            // Only update position if within boundaries
+            if (Math.abs(newX) <= halfWidth) {
+                vanState.x = newX;
+            } else {
+                // Bounce off boundary
+                vanState.velocity.x *= -0.5;
+                vanState.speed *= 0.8;
+            }
+
+            if (Math.abs(newY) <= halfHeight) {
+                vanState.y = newY;
+            } else {
+                // Bounce off boundary
+                vanState.velocity.y *= -0.5;
+                vanState.speed *= 0.8;
+            }
 
             // Update van position and rotation
             if (van) {
                 van.position.set(vanState.x, vanState.y, 0.2);
-                // Only update rotation if we're moving
-                if (length > 0) {
-                    van.rotation.y = Math.atan2(moveX, -moveY);
-                    
-                    // Add smoke particles when moving - spawn more frequently
-                    const smokeOffset = 0.3; // Distance behind van
+                van.rotation.y = vanState.direction;
+                
+                // Add smoke particles when moving
+                if (vanState.speed > 0.05) {
+                    const smokeOffset = 0.3;
                     const smokeX = vanState.x - Math.sin(van.rotation.y) * smokeOffset;
                     const smokeY = vanState.y - Math.cos(van.rotation.y) * smokeOffset;
                     
-                    // Spawn multiple particles per frame when moving
-                    for (let i = 0; i < 3; i++) {
+                    for (let i = 0; i < 2; i++) {
                         addSmokeParticle(smokeX, smokeY, 0.1);
                     }
                 }
+
+                // Side view camera following
+                const targetCameraPosition = new THREE.Vector3(
+                    vanState.x + cameraOffset.x,
+                    vanState.y + cameraOffset.y,
+                    cameraOffset.z
+                );
+
+                // Smooth camera movement with speed-based offset
+                const speedFactor = Math.min(vanState.speed * 2, 1);
+                const cameraOffsetX = Math.sin(vanState.direction) * speedFactor * 2;
+                const cameraOffsetY = -Math.cos(vanState.direction) * speedFactor * 2;
+
+                camera.position.lerp(
+                    new THREE.Vector3(
+                        targetCameraPosition.x + cameraOffsetX,
+                        targetCameraPosition.y + cameraOffsetY,
+                        targetCameraPosition.z
+                    ),
+                    cameraSmoothness
+                );
+
+                // Look at van from side view
+                const lookAheadFactor = Math.min(vanState.speed * 2, 1.5);
+                const lookAheadX = vanState.x + Math.sin(vanState.direction) * lookAheadFactor;
+                const lookAheadY = vanState.y - Math.cos(vanState.direction) * lookAheadFactor;
+                camera.lookAt(lookAheadX, lookAheadY, 0.2); // Slightly above the van
             }
 
             // Update smoke particles
@@ -230,7 +312,7 @@
                 particles[i3 + 1] += particleVelocities[i3 + 1];
                 particles[i3 + 2] += particleVelocities[i3 + 2];
                 
-                particleLifetimes[i] -= 0.008;  // Slower fade out
+                particleLifetimes[i] -= 0.008;
                 
                 // Remove dead particles
                 if (particleLifetimes[i] <= 0) {
@@ -252,9 +334,9 @@
             // Update smoke geometry
             smokeGeometry.attributes.position.needsUpdate = true;
 
-            // Update camera position
-            camera.position.set(vanState.x, vanState.y - 5, 5);
-            camera.lookAt(vanState.x, vanState.y, 0);
+            // Update map position
+            map.position.x = -vanState.x;
+            map.position.y = -vanState.y;
 
             renderer.render(scene, camera);
         }
